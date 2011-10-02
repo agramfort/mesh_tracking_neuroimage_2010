@@ -1,12 +1,15 @@
 %% Demo tracking with graph cuts on a triangulated mesh
 %
 % Implements what is described in :
-% 
+%
 % Neuroimage. 2011 Feb 1;54(3):1930-41. Epub 2010 Oct 7.
+%
 % Tracking cortical activity from M/EEG using graph cuts with spatiotemporal constraints.
+%
 % Gramfort A, Papadopoulo T, Baillet S, Clerc M.
 %
 % http://www.ncbi.nlm.nih.gov/pubmed/20933090
+%
 % http://hal.inria.fr/inria-00336887/
 
 %% Mesh generator from a point cloud
@@ -144,8 +147,6 @@ caxis([0 size(data,2)])
 set(hcbar,'YTick',[1:size(data,2)]-0.5);
 wmeans = 1:size(data,2);
 set(hcbar,'YTickLabel',[num2str(wmeans')]);
-
-savefig(['demo_tracking_st_reg_std_noise_',num2str(noise_amplitude)])
 
 %% Quantify result quality
 
