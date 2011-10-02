@@ -1,0 +1,419 @@
+
+<!DOCTYPE html
+  PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN">
+<html xmlns:mwsh="http://www.mathworks.com/namespace/mcode/v1/syntaxhighlight.dtd">
+   <head>
+      <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+   
+      <!--
+This HTML is auto-generated from an M-file.
+To make changes, update the M-file and republish this document.
+      -->
+      <title>Demo tracking with graph cuts on a triangulated mesh</title>
+      <meta name="generator" content="MATLAB 7.7">
+      <meta name="date" content="2011-10-02">
+      <meta name="m-file" content="demo_tracking">
+      <LINK REL="stylesheet" HREF="style.css" TYPE="text/css">
+   </head>
+   <body>
+      <div class="content">
+         <h1>Demo tracking with graph cuts on a triangulated mesh</h1>
+         <introduction>
+            <p>Implements what is described in :</p>
+            <p>Neuroimage. 2011 Feb 1;54(3):1930-41. Epub 2010 Oct 7.</p>
+            <p>Tracking cortical activity from M/EEG using graph cuts with spatiotemporal constraints.</p>
+            <p>Gramfort A, Papadopoulo T, Baillet S, Clerc M.</p>
+            <p><a href="http://www.ncbi.nlm.nih.gov/pubmed/20933090">http://www.ncbi.nlm.nih.gov/pubmed/20933090</a></p>
+            <p><a href="http://hal.inria.fr/inria-00336887/">http://hal.inria.fr/inria-00336887/</a></p>
+         </introduction>
+         <h2>Contents</h2>
+         <div>
+            <ul>
+               <li><a href="#1">Mesh generator from a point cloud</a></li>
+               <li><a href="#2">Optimization options</a></li>
+               <li><a href="#3">Ground truth labels image</a></li>
+               <li><a href="#4">Add noise to the data</a></li>
+               <li><a href="#5">Run Thresholding</a></li>
+               <li><a href="#6">Thresholding result image</a></li>
+               <li><a href="#7">Run tracking</a></li>
+               <li><a href="#8">Tracking result image</a></li>
+               <li><a href="#9">Quantify result quality</a></li>
+            </ul>
+         </div>
+         <h2>Mesh generator from a point cloud<a name="1"></a></h2><pre class="codeinput">close <span class="string">all</span>;
+
+randn(<span class="string">'seed'</span>,1);
+points = randn(30000,3);
+<span class="comment">% points = randn(10000,3);</span>
+points(points(:,3)&lt;0,:) = [];
+points = points ./ repmat(sqrt(sum(points.^2,2)),1,3);
+npoints = size(points,1);
+points = points;
+faces = mesh_generator(points);
+curvature = ones(npoints,1);
+</pre><pre class="codeoutput">
+method =
+
+default
+
+</pre><h2>Optimization options<a name="2"></a></h2><pre class="codeinput">thresh = 0.5;
+
+[theta,rho,z] = cart2pol(points(:,1),points(:,2),points(:,3));
+thetas = [0 , 2*pi/5 ; 0.5*pi/5 , 2.5*pi/5 ; 0.5*pi/5 , 3*pi/5];
+data = [];
+<span class="keyword">for</span> ii=1:size(thetas,1)
+    data(:,ii) = theta&gt;thetas(ii,1) &amp; theta&lt;thetas(ii,2) &amp; z &gt; 0.4 &amp; rho&gt;0.5;
+<span class="keyword">end</span>
+data_init = data;
+
+<span class="comment">% add bad activation</span>
+data(:,2) = data(:,2) | (theta&gt;4*pi/5 &amp; theta&lt;4.5*pi/5 &amp; z &gt; 0.4 &amp; rho&gt;0.5 &amp; z &lt; 0.8);
+
+borders_init = mesh_isolevels(faces,data_init);
+</pre><pre class="codeoutput">[********************]
+</pre><h2>Ground truth labels image<a name="3"></a></h2><pre class="codeinput">smart_figure(<span class="string">'Initial labels'</span>); clf
+clear <span class="string">options</span>
+options.face_vertex_color = 0.4*ones(npoints,3);
+options.edge_color = [0.5 0.5 0.5];
+options.face_alpha = 0.2;
+mesh_display(points,faces,options);
+bigfig
+
+win_colors = jet(max(size(data,2),2));
+clear <span class="string">options</span>
+options.cmap = win_colors;
+options.linewidth = 5;
+mesh_display_isolevels(points,faces,borders_init,options);
+
+colormap(win_colors);
+hcbar = colorbar;
+ncbar_ticks = length(get(hcbar,<span class="string">'YTickLabel'</span>));
+caxis([0 size(data,2)])
+set(hcbar,<span class="string">'YTick'</span>,[1:size(data,2)]-0.5);
+wmeans = 1:size(data,2);
+set(hcbar,<span class="string">'YTickLabel'</span>,[num2str(wmeans')]);
+</pre><div class="div-img"><img vspace="5" hspace="5" src="demo_tracking_01.png"> </div>
+         <h2>Add noise to the data<a name="4"></a></h2><pre class="codeinput">randn(<span class="string">'seed'</span>,0)
+
+noise_amplitude = 1;
+lambda_space = 2;
+lambda_time = 0.1;
+
+<span class="comment">% noise_amplitude = 2;</span>
+<span class="comment">% lambda_space = 2.5;</span>
+<span class="comment">% lambda_time = 0.2;</span>
+<span class="comment">%</span>
+<span class="comment">% noise_amplitude = 3;</span>
+<span class="comment">% lambda_space = 3;</span>
+<span class="comment">% lambda_time = 0.3;</span>
+
+noise = noise_amplitude.*randn(size(data));
+data = data + noise;
+
+SNR = norm(data,<span class="string">'fro'</span>) / norm(noise,<span class="string">'fro'</span>);
+disp([<span class="string">'SNR : '</span>,num2str(SNR)]);
+
+npoints = size(points,1);
+
+nwin = size(data,2);
+clear <span class="string">tracking_options</span>
+tracking_options.weight_type = 2;
+</pre><pre class="codeoutput">SNR : 1.053
+</pre><h2>Run Thresholding<a name="5"></a></h2><pre class="codeinput">[labels,borders,maxflow,de,se_space,se_time,face_labels] = mesh_gc_tracking(points,faces,data,thresh,0,0,tracking_options);
+</pre><pre class="codeoutput">---- Using tracking graph-cut
+v : 29851 :: e : 44738 :: t : 3
+-- Starting MaxFlow
+-- MaxFlow done !
+  maxflow  =  data_term + lambda_space *  se_space  + lambda_time * se_time
+0.00e+00 =  -3.91e-03 +      0.00e+00  * 2.88e+02 +    0.00e+00   *  2.63e+02
+0.00e+00 =  -3.91e-03 +                0.00e+00          +                0.00e+00
+</pre><h2>Thresholding result image<a name="6"></a></h2><pre class="codeinput">figure; clf
+clear <span class="string">options</span>
+options.face_vertex_color = 0.4*ones(npoints,3);
+options.edge_color = [0.5 0.5 0.5];
+options.face_alpha = 0.2;
+mesh_display(points,faces,options);
+set(gcf,<span class="string">'Name'</span>,<span class="string">'Thresholding'</span>);
+bigfig
+
+clear <span class="string">options</span>
+options.cmap = win_colors;
+options.linewidth = 5;
+mesh_display_isolevels(points,faces,borders,options);
+
+colormap(win_colors);
+hcbar = colorbar;
+ncbar_ticks = length(get(hcbar,<span class="string">'YTickLabel'</span>));
+caxis([0 size(data,2)])
+set(hcbar,<span class="string">'YTick'</span>,[1:size(data,2)]-0.5);
+wmeans = 1:size(data,2);
+set(hcbar,<span class="string">'YTickLabel'</span>,[num2str(wmeans')]);
+</pre><div class="div-img"><img vspace="5" hspace="5" src="demo_tracking_02.png"> </div>
+         <h2>Run tracking<a name="7"></a></h2><pre class="codeinput">[labels,borders,maxflow,de,se_space,se_time,face_labels] = mesh_gc_tracking(points,faces,data,thresh,lambda_space,lambda_time,tracking_options);
+</pre><pre class="codeoutput">---- Using tracking graph-cut
+v : 29851 :: e : 44738 :: t : 3
+-- Starting MaxFlow
+-- MaxFlow done !
+  maxflow  =  data_term + lambda_space *  se_space  + lambda_time * se_time
+9.99e+01 =  7.81e+01 +      2.00e+00  * 4.78e+00 +    1.00e-01   *  2.62e+01
+9.99e+01 =  7.81e+01 +                9.56e+00          +                2.62e+00
+</pre><h2>Tracking result image<a name="8"></a></h2><pre class="codeinput">win_colors = jet(max(nwin,2));
+
+figure; clf
+clear <span class="string">options</span>
+options.face_vertex_color = 0.4*ones(npoints,3);
+options.edge_color = [0.5 0.5 0.5];
+options.face_alpha = 0.2;
+mesh_display(points,faces,options);
+set(gcf,<span class="string">'Name'</span>,<span class="string">'Graph Cuts segmentation'</span>);
+bigfig
+
+clear <span class="string">options</span>
+options.cmap = win_colors;
+options.linewidth = 5;
+mesh_display_isolevels(points,faces,borders,options);
+
+colormap(win_colors);
+hcbar = colorbar;
+ncbar_ticks = length(get(hcbar,<span class="string">'YTickLabel'</span>));
+caxis([0 size(data,2)])
+set(hcbar,<span class="string">'YTick'</span>,[1:size(data,2)]-0.5);
+wmeans = 1:size(data,2);
+set(hcbar,<span class="string">'YTickLabel'</span>,[num2str(wmeans')]);
+</pre><div class="div-img"><img vspace="5" hspace="5" src="demo_tracking_03.png"> </div>
+         <h2>Quantify result quality<a name="9"></a></h2><pre class="codeinput"><span class="comment">% Percentage of badely labeled vertices</span>
+err = sum(sum(labels == data_init)) / numel(data);
+disp([<span class="string">'Error : '</span>,num2str(err)]);
+
+<span class="comment">% area</span>
+face_centers = mesh_faces_centers(points,faces);
+[theta_centers,rho_centers,z_centers] = cart2pol(face_centers(:,1),face_centers(:,2),face_centers(:,3));
+face_areas = mesh_areas(points,faces);
+face_labels_init = [];
+<span class="keyword">for</span> ii=1:size(thetas,1)
+    face_labels_init(:,ii) = ~(theta_centers&gt;thetas(ii,1) &amp; theta_centers&lt;thetas(ii,2) &amp; z_centers &gt; 0.4 &amp; rho_centers&gt;0.5);
+<span class="keyword">end</span>
+face_areas_rep = repmat(face_areas',1,size(thetas,1));
+err_area = 2*sum(sum(face_areas_rep.*((face_labels==0) .* (face_labels_init==0)))) / <span class="keyword">...</span>
+        sum(sum(face_areas_rep.*(face_labels==0)) + sum(face_areas_rep.*(face_labels_init==0)));
+disp([<span class="string">'Error area (Dice coeff): '</span>,num2str(err_area)]);
+
+<span class="comment">% number of components</span>
+ncomp = 0;
+<span class="keyword">for</span> ii=1:size(data,2)
+    [p,f] = mesh_remove_points(points,faces,[],find(labels(:,ii)==1));
+    <span class="comment">% close all; mesh_display(p,f);</span>
+    <span class="comment">% pause</span>
+    comps = mesh_components(f);
+    ucomps = unique(comps);
+    bcidx = [];
+    <span class="keyword">for</span> jj=1:length(ucomps)
+        <span class="keyword">if</span> numel(find(comps==ucomps(jj))) &lt;= 1
+            bcidx = [bcidx,jj];
+        <span class="keyword">end</span>
+    <span class="keyword">end</span>
+    ucomps(bcidx) = [];
+    ncomp = ncomp + length(ucomps);
+<span class="keyword">end</span>
+disp([<span class="string">'Ncomp : '</span>,num2str(ncomp)]);
+</pre><pre class="codeoutput">Error : 0.0082637
+Error area (Dice coeff): 0.96363
+Ncomp : 3
+</pre><p class="footer"><br>
+            see COPYING for license<br>
+            Copyright  &reg; 2009-2011 Alexandre Gramfort<br></p>
+      </div>
+      <!--
+##### SOURCE BEGIN #####
+%% Demo tracking with graph cuts on a triangulated mesh
+%
+% Implements what is described in :
+%
+% Neuroimage. 2011 Feb 1;54(3):1930-41. Epub 2010 Oct 7.
+%
+% Tracking cortical activity from M/EEG using graph cuts with spatiotemporal constraints.
+%
+% Gramfort A, Papadopoulo T, Baillet S, Clerc M.
+%
+% http://www.ncbi.nlm.nih.gov/pubmed/20933090
+%
+% http://hal.inria.fr/inria-00336887/
+
+%% Mesh generator from a point cloud
+
+close all;
+
+randn('seed',1);
+points = randn(30000,3);
+% points = randn(10000,3);
+points(points(:,3)<0,:) = [];
+points = points ./ repmat(sqrt(sum(points.^2,2)),1,3);
+npoints = size(points,1);
+points = points;
+faces = mesh_generator(points);
+curvature = ones(npoints,1);
+
+%% Optimization options
+thresh = 0.5;
+
+[theta,rho,z] = cart2pol(points(:,1),points(:,2),points(:,3));
+thetas = [0 , 2*pi/5 ; 0.5*pi/5 , 2.5*pi/5 ; 0.5*pi/5 , 3*pi/5];
+data = [];
+for ii=1:size(thetas,1)
+    data(:,ii) = theta>thetas(ii,1) & theta<thetas(ii,2) & z > 0.4 & rho>0.5;
+end
+data_init = data;
+
+% add bad activation
+data(:,2) = data(:,2) | (theta>4*pi/5 & theta<4.5*pi/5 & z > 0.4 & rho>0.5 & z < 0.8);
+
+borders_init = mesh_isolevels(faces,data_init);
+
+%% Ground truth labels image
+
+smart_figure('Initial labels'); clf
+clear options
+options.face_vertex_color = 0.4*ones(npoints,3);
+options.edge_color = [0.5 0.5 0.5];
+options.face_alpha = 0.2;
+mesh_display(points,faces,options);
+bigfig
+
+win_colors = jet(max(size(data,2),2));
+clear options
+options.cmap = win_colors;
+options.linewidth = 5;
+mesh_display_isolevels(points,faces,borders_init,options);
+
+colormap(win_colors);
+hcbar = colorbar;
+ncbar_ticks = length(get(hcbar,'YTickLabel'));
+caxis([0 size(data,2)])
+set(hcbar,'YTick',[1:size(data,2)]-0.5);
+wmeans = 1:size(data,2);
+set(hcbar,'YTickLabel',[num2str(wmeans')]);
+
+%% Add noise to the data
+randn('seed',0)
+
+noise_amplitude = 1;
+lambda_space = 2;
+lambda_time = 0.1;
+
+% noise_amplitude = 2;
+% lambda_space = 2.5;
+% lambda_time = 0.2;
+%
+% noise_amplitude = 3;
+% lambda_space = 3;
+% lambda_time = 0.3;
+
+noise = noise_amplitude.*randn(size(data));
+data = data + noise;
+
+SNR = norm(data,'fro') / norm(noise,'fro');
+disp(['SNR : ',num2str(SNR)]);
+
+npoints = size(points,1);
+
+nwin = size(data,2);
+clear tracking_options
+tracking_options.weight_type = 2;
+
+%% Run Thresholding
+[labels,borders,maxflow,de,se_space,se_time,face_labels] = mesh_gc_tracking(points,faces,data,thresh,0,0,tracking_options);
+
+%% Thresholding result image
+figure; clf
+clear options
+options.face_vertex_color = 0.4*ones(npoints,3);
+options.edge_color = [0.5 0.5 0.5];
+options.face_alpha = 0.2;
+mesh_display(points,faces,options);
+set(gcf,'Name','Thresholding');
+bigfig
+
+clear options
+options.cmap = win_colors;
+options.linewidth = 5;
+mesh_display_isolevels(points,faces,borders,options);
+
+colormap(win_colors);
+hcbar = colorbar;
+ncbar_ticks = length(get(hcbar,'YTickLabel'));
+caxis([0 size(data,2)])
+set(hcbar,'YTick',[1:size(data,2)]-0.5);
+wmeans = 1:size(data,2);
+set(hcbar,'YTickLabel',[num2str(wmeans')]);
+
+%% Run tracking
+
+[labels,borders,maxflow,de,se_space,se_time,face_labels] = mesh_gc_tracking(points,faces,data,thresh,lambda_space,lambda_time,tracking_options);
+
+%% Tracking result image
+win_colors = jet(max(nwin,2));
+
+figure; clf
+clear options
+options.face_vertex_color = 0.4*ones(npoints,3);
+options.edge_color = [0.5 0.5 0.5];
+options.face_alpha = 0.2;
+mesh_display(points,faces,options);
+set(gcf,'Name','Graph Cuts segmentation');
+bigfig
+
+clear options
+options.cmap = win_colors;
+options.linewidth = 5;
+mesh_display_isolevels(points,faces,borders,options);
+
+colormap(win_colors);
+hcbar = colorbar;
+ncbar_ticks = length(get(hcbar,'YTickLabel'));
+caxis([0 size(data,2)])
+set(hcbar,'YTick',[1:size(data,2)]-0.5);
+wmeans = 1:size(data,2);
+set(hcbar,'YTickLabel',[num2str(wmeans')]);
+
+%% Quantify result quality
+
+% Percentage of badely labeled vertices
+err = sum(sum(labels == data_init)) / numel(data);
+disp(['Error : ',num2str(err)]);
+
+% area
+face_centers = mesh_faces_centers(points,faces);
+[theta_centers,rho_centers,z_centers] = cart2pol(face_centers(:,1),face_centers(:,2),face_centers(:,3));
+face_areas = mesh_areas(points,faces);
+face_labels_init = [];
+for ii=1:size(thetas,1)
+    face_labels_init(:,ii) = ~(theta_centers>thetas(ii,1) & theta_centers<thetas(ii,2) & z_centers > 0.4 & rho_centers>0.5);
+end
+face_areas_rep = repmat(face_areas',1,size(thetas,1));
+err_area = 2*sum(sum(face_areas_rep.*((face_labels==0) .* (face_labels_init==0)))) / ...
+        sum(sum(face_areas_rep.*(face_labels==0)) + sum(face_areas_rep.*(face_labels_init==0)));
+disp(['Error area (Dice coeff): ',num2str(err_area)]);
+
+% number of components
+ncomp = 0;
+for ii=1:size(data,2)
+    [p,f] = mesh_remove_points(points,faces,[],find(labels(:,ii)==1));
+    % close all; mesh_display(p,f);
+    % pause
+    comps = mesh_components(f);
+    ucomps = unique(comps);
+    bcidx = [];
+    for jj=1:length(ucomps)
+        if numel(find(comps==ucomps(jj))) <= 1
+            bcidx = [bcidx,jj];
+        end
+    end
+    ucomps(bcidx) = [];
+    ncomp = ncomp + length(ucomps);
+end
+disp(['Ncomp : ',num2str(ncomp)]);
+
+##### SOURCE END #####
+-->
+   </body>
+</html>
